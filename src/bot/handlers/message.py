@@ -1,6 +1,7 @@
 """Message handlers for non-command inputs."""
 
 import asyncio
+import os
 from typing import Optional
 
 import structlog
@@ -603,8 +604,34 @@ async def handle_text_message(
 
             failed_files: list[str] = []
             for attachment in mcp_files:
+                # TOCTOU-safe: refuse to send if path was swapped (symlink,
+                # replacement) between validation and delivery.
                 try:
-                    with open(attachment.path, "rb") as f:
+                    fd = os.open(str(attachment.path), os.O_RDONLY | os.O_NOFOLLOW)
+                except OSError as file_err:
+                    logger.warning(
+                        "TOCTOU-safe open failed for MCP document",
+                        path=str(attachment.path),
+                        error=str(file_err),
+                    )
+                    failed_files.append(attachment.path.name)
+                    continue
+
+                try:
+                    file_stat = os.fstat(fd)
+                    if (
+                        file_stat.st_ino != attachment.inode
+                        or file_stat.st_dev != attachment.device
+                    ):
+                        logger.warning(
+                            "File identity changed since validation — " "refusing send",
+                            path=str(attachment.path),
+                        )
+                        os.close(fd)
+                        failed_files.append(attachment.path.name)
+                        continue
+
+                    with os.fdopen(fd, "rb") as f:
                         await update.message.reply_document(
                             document=f,
                             filename=attachment.path.name,
@@ -619,6 +646,10 @@ async def handle_text_message(
                         error=str(file_err),
                     )
                     failed_files.append(attachment.path.name)
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
 
             summary_lines: list[str] = []
             if failed_files:

@@ -6,6 +6,7 @@ classic mode, delegates to existing full-featured handlers.
 """
 
 import asyncio
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -959,10 +960,18 @@ class MessageOrchestrator:
         support grouping documents into an album. On per-file failure we log a
         warning and continue with the rest.
 
-        *rejected* carries paths that were refused by bot-side validation
-        (outside approved directory, secrets blocklist, too large). These are
+        *rejected* carries paths that were refused by bot-side security
+        validation (``outside_approved`` or ``blocked_secret``). These are
         listed in the same summary message so the user isn't misled by
-        Claude's "file sent" reply.
+        Claude's "file sent" reply. Tool-side rejections
+        (``too_large``/``empty``/``not_a_file``) are not surfaced here —
+        Claude already sees the error from the MCP tool and describes it
+        accurately on its own.
+
+        Each file is re-opened with ``O_NOFOLLOW`` and its inode/device is
+        compared against what was captured at validation time, to prevent a
+        TOCTOU where the path is swapped for a symlink (e.g. to a secret)
+        between the stream callback and this call.
         """
         if not files and not rejected:
             return
@@ -970,7 +979,31 @@ class MessageOrchestrator:
         failed: List[str] = []
         for attachment in files:
             try:
-                with open(attachment.path, "rb") as f:
+                fd = os.open(str(attachment.path), os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError as e:
+                logger.warning(
+                    "TOCTOU-safe open failed for MCP document",
+                    path=str(attachment.path),
+                    error=str(e),
+                )
+                failed.append(attachment.path.name)
+                continue
+
+            try:
+                file_stat = os.fstat(fd)
+                if (
+                    file_stat.st_ino != attachment.inode
+                    or file_stat.st_dev != attachment.device
+                ):
+                    logger.warning(
+                        "File identity changed since validation — refusing send",
+                        path=str(attachment.path),
+                    )
+                    os.close(fd)
+                    failed.append(attachment.path.name)
+                    continue
+
+                with os.fdopen(fd, "rb") as f:
                     await update.message.reply_document(
                         document=f,
                         filename=attachment.path.name,
@@ -985,6 +1018,10 @@ class MessageOrchestrator:
                     error=str(e),
                 )
                 failed.append(attachment.path.name)
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
         lines: List[str] = []
         if failed:
