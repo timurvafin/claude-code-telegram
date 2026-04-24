@@ -988,12 +988,12 @@ class MessageOrchestrator:
 
         lines: List[str] = []
         if failed:
-            lines.append(f"⚠️ Не удалось отправить: {', '.join(failed)}")
+            lines.append(f"⚠️ Failed to send: {', '.join(failed)}")
         if rejected:
             rejected_names = ", ".join(Path(p).name or p for p in rejected)
             lines.append(
-                "🚫 Отклонено политикой безопасности "
-                f"(нельзя отправлять вне APPROVED_DIRECTORY или секреты): "
+                "🚫 Rejected by security policy "
+                "(outside APPROVED_DIRECTORY or blocked secret file): "
                 f"{rejected_names}"
             )
         if lines:

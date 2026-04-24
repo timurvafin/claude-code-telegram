@@ -622,14 +622,12 @@ async def handle_text_message(
 
             summary_lines: list[str] = []
             if failed_files:
-                summary_lines.append(
-                    f"⚠️ Не удалось отправить: {', '.join(failed_files)}"
-                )
+                summary_lines.append(f"⚠️ Failed to send: {', '.join(failed_files)}")
             if mcp_rejected_files:
                 rejected_names = ", ".join(_P(p).name or p for p in mcp_rejected_files)
                 summary_lines.append(
-                    "🚫 Отклонено политикой безопасности "
-                    "(нельзя отправлять вне APPROVED_DIRECTORY или секреты): "
+                    "🚫 Rejected by security policy "
+                    "(outside APPROVED_DIRECTORY or blocked secret file): "
                     f"{rejected_names}"
                 )
             if summary_lines:
