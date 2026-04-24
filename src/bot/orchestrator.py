@@ -9,6 +9,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -1159,6 +1160,29 @@ class MessageOrchestrator:
                 success=success,
             )
 
+    async def _save_pdf_and_build_prompt(
+        self, document: Any, caption: Optional[str]
+    ) -> str:
+        """Save PDF to <approved_directory>/.uploads/ and build a prompt for Claude.
+
+        Returns prompt with an absolute path so Claude's Read tool works regardless
+        of cwd. Filename is prefixed with millisecond timestamp to avoid collisions.
+        """
+        uploads_dir = Path(self.settings.approved_directory) / ".uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        safe_name = f"{timestamp}-{document.file_name}"
+        target = uploads_dir / safe_name
+
+        tg_file = await document.get_file()
+        await tg_file.download_to_drive(str(target))
+
+        return (
+            f"{caption or 'PDF uploaded:'}\n\n"
+            f"File: `{target}`. Read it via Read tool and answer the user's question."
+        )
+
     async def agentic_document(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -1192,12 +1216,19 @@ class MessageOrchestrator:
         await chat.send_action("typing")
         progress_msg = await update.message.reply_text("Working...")
 
+        prompt: Optional[str] = None
+
+        # Binary document formats are saved to disk for Claude to read via Read tool.
+        if document.file_name and document.file_name.lower().endswith(".pdf"):
+            prompt = await self._save_pdf_and_build_prompt(
+                document, update.message.caption
+            )
+
         # Try enhanced file handler, fall back to basic
         features = context.bot_data.get("features")
         file_handler = features.get_file_handler() if features else None
-        prompt: Optional[str] = None
 
-        if file_handler:
+        if prompt is None and file_handler:
             try:
                 processed_file = await file_handler.handle_document_upload(
                     document,
@@ -1208,7 +1239,7 @@ class MessageOrchestrator:
             except Exception:
                 file_handler = None
 
-        if not file_handler:
+        if prompt is None and not file_handler:
             file = await document.get_file()
             file_bytes = await file.download_as_bytearray()
             try:

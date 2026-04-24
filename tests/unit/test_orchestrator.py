@@ -367,6 +367,68 @@ async def test_agentic_document_rejects_large_files(agentic_settings, deps):
     assert "too large" in call_args.args[0].lower()
 
 
+async def test_agentic_document_pdf_saves_and_prompts_read(agentic_settings, deps):
+    """PDF uploads are saved to <approved_directory>/.uploads/ and Claude gets
+    an absolute path + instruction to use Read."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    approved_dir = Path(agentic_settings.approved_directory)
+    pdf_bytes = b"%PDF-1.4\nSMOKE-TOKEN-42\n%%EOF\n"
+
+    async def fake_download(target_path):
+        Path(target_path).write_bytes(pdf_bytes)
+
+    tg_file = MagicMock()
+    tg_file.download_to_drive = AsyncMock(side_effect=fake_download)
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.message.document.file_name = "ticket.pdf"
+    update.message.document.file_size = len(pdf_bytes)
+    update.message.document.get_file = AsyncMock(return_value=tg_file)
+    update.message.caption = "ticket attached"
+    update.message.chat.send_action = AsyncMock()
+    update.message.reply_text = AsyncMock()
+
+    progress_msg = AsyncMock()
+    progress_msg.edit_text = AsyncMock()
+    progress_msg.delete = AsyncMock()
+    update.message.reply_text.return_value = progress_msg
+
+    mock_response = MagicMock()
+    mock_response.session_id = "pdf-session-1"
+    mock_response.content = "Read the PDF. Found SMOKE-TOKEN-42."
+    mock_response.tools_used = []
+
+    claude_integration = AsyncMock()
+    claude_integration.run_command = AsyncMock(return_value=mock_response)
+
+    context = MagicMock()
+    context.user_data = {}
+    context.bot_data = {
+        "settings": agentic_settings,
+        "security_validator": None,
+        "features": None,
+        "claude_integration": claude_integration,
+    }
+
+    await orchestrator.agentic_document(update, context)
+
+    uploads_dir = approved_dir / ".uploads"
+    saved_files = list(uploads_dir.glob("*-ticket.pdf"))
+    assert len(saved_files) == 1, f"expected one saved PDF, got {saved_files}"
+    assert saved_files[0].read_bytes() == pdf_bytes
+
+    claude_integration.run_command.assert_awaited_once()
+    call_kwargs = claude_integration.run_command.call_args.kwargs
+    prompt = (
+        call_kwargs.get("prompt") or claude_integration.run_command.call_args.args[0]
+    )
+    assert str(saved_files[0]) in prompt
+    assert "Read" in prompt
+    assert "ticket attached" in prompt
+
+
 async def test_agentic_voice_calls_claude(agentic_settings, deps):
     """Agentic voice handler transcribes and routes prompt to Claude."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)

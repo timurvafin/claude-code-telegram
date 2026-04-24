@@ -86,6 +86,8 @@ class SecurityValidator:
         ".vue",
         ".svelte",
         ".lock",
+        # Document formats (binary, saved to disk for downstream tools)
+        ".pdf",
     }
 
     # Forbidden filenames and patterns
