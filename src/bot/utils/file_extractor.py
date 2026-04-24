@@ -33,14 +33,25 @@ MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024
 REJECTION_SURFACE_TO_USER = frozenset({"outside_approved", "blocked_secret"})
 
 
+# Telegram caption limit for photos and documents.
+MAX_CAPTION_CHARS = 1024
+
+
 @dataclass
 class FileAttachment:
-    """A file to attach to a Telegram response as a document."""
+    """A file to attach to a Telegram response as a document.
+
+    ``inode`` and ``device`` are captured at validation time so the caller
+    can detect TOCTOU replacement (symlink swap, file renamed over, etc.)
+    before re-opening the path for delivery.
+    """
 
     path: Path
     original_reference: str
     size_bytes: int
     caption: str = ""
+    inode: int = 0
+    device: int = 0
 
 
 def _is_forbidden_filename(name: str) -> bool:
@@ -104,7 +115,8 @@ def validate_file_path(
             )
             return None, "blocked_secret"
 
-        size_bytes = resolved.stat().st_size
+        stat_result = resolved.stat()
+        size_bytes = stat_result.st_size
         if size_bytes == 0:
             logger.debug("MCP file is empty", path=str(resolved))
             return None, "empty"
@@ -122,7 +134,9 @@ def validate_file_path(
                 path=resolved,
                 original_reference=file_path,
                 size_bytes=size_bytes,
-                caption=caption,
+                caption=caption[:MAX_CAPTION_CHARS],
+                inode=stat_result.st_ino,
+                device=stat_result.st_dev,
             ),
             None,
         )

@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from src.bot.utils.file_extractor import (
+    MAX_CAPTION_CHARS,
     MAX_FILE_SIZE_BYTES,
     REJECTION_SURFACE_TO_USER,
     FileAttachment,
@@ -152,3 +153,55 @@ class TestRejectionSurfaceContract:
         # not surface a duplicate summary.
         for reason in ("too_large", "empty", "not_absolute", "not_a_file"):
             assert reason not in REJECTION_SURFACE_TO_USER
+
+
+class TestSymlinkEscape:
+    """Symlink inside approved_dir pointing outside must be rejected."""
+
+    def test_symlink_to_outside_rejected(self, tmp_path: Path):
+        approved = tmp_path / "project"
+        approved.mkdir()
+        outside = tmp_path / "secret.pdf"
+        outside.write_bytes(b"%PDF" + b"x" * 50)
+        link = approved / "innocent.pdf"
+        link.symlink_to(outside)
+        # resolve() follows the symlink, then relative_to catches the escape.
+        _fail(validate_file_path(str(link), approved), "outside_approved")
+
+    def test_symlink_within_approved_ok(self, tmp_path: Path):
+        approved = tmp_path
+        real = approved / "real.pdf"
+        real.write_bytes(b"%PDF" + b"x" * 50)
+        link = approved / "alias.pdf"
+        link.symlink_to(real)
+        attachment = _ok(validate_file_path(str(link), approved))
+        # resolved path points to the real file, and identity captured.
+        assert attachment.path == real.resolve()
+        assert attachment.inode == real.stat().st_ino
+
+
+class TestIdentityCaptured:
+    def test_inode_and_device_recorded(self, work_dir: Path, approved_dir: Path):
+        f = work_dir / "report.pdf"
+        f.write_bytes(b"%PDF" + b"x" * 100)
+        attachment = _ok(validate_file_path(str(f), approved_dir))
+        st = f.stat()
+        assert attachment.inode == st.st_ino
+        assert attachment.device == st.st_dev
+
+
+class TestCaptionTruncation:
+    def test_long_caption_truncated_to_telegram_limit(
+        self, work_dir: Path, approved_dir: Path
+    ):
+        f = work_dir / "report.pdf"
+        f.write_bytes(b"%PDF" + b"x" * 100)
+        long_caption = "x" * (MAX_CAPTION_CHARS + 500)
+        attachment = _ok(validate_file_path(str(f), approved_dir, caption=long_caption))
+        assert len(attachment.caption) == MAX_CAPTION_CHARS
+
+    def test_short_caption_preserved(self, work_dir: Path, approved_dir: Path):
+        f = work_dir / "report.pdf"
+        f.write_bytes(b"%PDF" + b"x" * 100)
+        attachment = _ok(validate_file_path(str(f), approved_dir, caption="short"))
+        assert attachment.caption == "short"
